@@ -26,6 +26,7 @@
       - python3-arrow
       - python3-backoff
       - python3-bleach
+      - python3-celery
       - python3-click
       - python3-colander
       - python3-conu
@@ -150,6 +151,7 @@
   with_items:
       - bodhi.service
       - print-messages.service
+      - celery.service
 
 - name: Install the .bashrc
   copy:
@@ -173,6 +175,17 @@
       dest: /etc/motd
       mode: 0644
 
+- name: create the composes directories
+  file:
+      path: "/srv/{{item}}"
+      owner: vagrant
+      group: vagrant
+      state: directory
+  with_items:
+      - composes
+      - composes/final
+      - composes/stage
+
 - name: Set up the RabbitMQ broker
   import_tasks: rabbitmq.yml
 
@@ -184,29 +197,17 @@
       group: root
       mode: 644
 
-- name: Start and enable the bodhi service
+- name: Start and enable the bodhi-related services
   service:
-      name: bodhi
+      name: "{{ item }}"
       state: started
       enabled: yes
-
-- name: Start and enable the docker service
-  service:
-      name: docker
-      state: started
-      enabled: yes
-
-- name: Start and enable the bodhi consumer service
-  service:
-      name: fm-consumer@config
-      state: started
-      enabled: yes
-
-- name: Start and enable the fedora-messaging print service
-  service:
-      name: print-messages
-      state: started
-      enabled: yes
+  with_items:
+      - bodhi
+      - docker
+      - celery
+      - fm-consumer@config
+      - print-messages
 
 - name: Link the bodhi bash completion script
   file:
