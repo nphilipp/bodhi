@@ -143,7 +143,7 @@ def remember_me(context, request, info, *args, **kw):
                               request.registry.settings['openid.provider'])
         return HTTPFound(location=request.route_url('home'))
 
-    username = str(info['identity_url'].split('http://')[1].split('.')[0])
+    username = info['sreg']['nickname']
     email = info['sreg']['email']
     log.debug('remember_me: groups = %s' % info['groups'])
     log.info('%s successfully logged in' % username)
