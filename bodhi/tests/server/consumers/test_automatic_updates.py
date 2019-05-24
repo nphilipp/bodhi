@@ -69,7 +69,7 @@ class TestAutomaticUpdateHandler(base.BasePyTestCase):
         caplog.set_level(logging.DEBUG)
 
         # process the message
-        with mock_sends(UpdateMessage):
+        with mock_sends(UpdateMessage), mock.patch('bodhi.server.models.handle_update'):
             self.handler(self.sample_message)
 
         # check if the update exists...
@@ -152,7 +152,7 @@ class TestAutomaticUpdateHandler(base.BasePyTestCase):
         self.db.query(User).filter_by(name=expected_username).delete()
         self.db.flush()
 
-        with mock_sends(UpdateMessage):
+        with mock_sends(UpdateMessage), mock.patch('bodhi.server.models.handle_update'):
             self.handler(self.sample_message)
 
         assert(f"Creating bodhi user for '{expected_username}'."
@@ -171,7 +171,7 @@ class TestAutomaticUpdateHandler(base.BasePyTestCase):
             self.db.add(user)
         self.db.flush()
 
-        with mock_sends(UpdateMessage):
+        with mock_sends(UpdateMessage), mock.patch('bodhi.server.models.handle_update'):
             self.handler(self.sample_message)
 
         assert(f"Creating bodhi user for '{expected_username}'."
@@ -195,7 +195,7 @@ class TestAutomaticUpdateHandler(base.BasePyTestCase):
         """Assert that duplicate messages ignore existing build/update."""
         caplog.set_level(logging.DEBUG)
 
-        with mock_sends(UpdateMessage):
+        with mock_sends(UpdateMessage), mock.patch('bodhi.server.models.handle_update'):
             self.handler(self.sample_message)
 
         caplog.clear()
