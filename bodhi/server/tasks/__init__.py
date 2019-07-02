@@ -28,7 +28,7 @@ from bodhi.server.util import pyfile_to_module
 
 
 # Workaround https://github.com/celery/celery/issues/5416
-if celery.version_info < (4, 3) and sys.version_info >= (3, 7):
+if celery.version_info < (4, 3) and sys.version_info >= (3, 7):  # pragma: no cover
     from re import Pattern
     from celery.app.routes import re as routes_re
     routes_re._pattern_type = Pattern
