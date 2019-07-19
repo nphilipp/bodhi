@@ -20,7 +20,6 @@
 from collections import defaultdict, OrderedDict
 from contextlib import contextmanager
 from urllib.parse import urlencode
-import errno
 import functools
 import hashlib
 import json
@@ -28,6 +27,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import types
@@ -1494,30 +1494,92 @@ def get_absolute_path(location):
     return base + "/" + final
 
 
-def pyfile_to_module(
-        filename: str, modname: str, silent: bool = False) -> typing.Union[types.ModuleType, bool]:
-    """Create a Python module from a Python file.
+class PyFileAsModuleFinderLoader:
+    """PEP 302 module finder/loader for arbitrary Python files.
 
-    This function behaves as if the file was imported as module. Copied from Flask's
-    ``flask.config.Config.from_pyfile`` method.
-
-    Args:
-        filename: the filename to load.  This can either be an
-                  absolute filename or a filename relative to the
-                  current working directory.
-        modname: the name of the module that will be produced.
-        silent: set to ``True`` if you want silent failure for missing
-                files.
+    Use the .register() class method to create the finder/loader object and add
+    it to sys.meta_path. Subsequently, importing the registered name will load
+    the file instead of other files in sys.path of the same name.
     """
-    filename = os.path.join(os.getcwd(), filename)
-    d = types.ModuleType(modname)
-    d.__file__ = filename
-    try:
-        with open(filename) as config_file:
-            exec(compile(config_file.read(), filename, 'exec'), d.__dict__)
-    except IOError as e:
-        if silent and e.errno in (errno.ENOENT, errno.EISDIR):
-            return False
-        e.strerror = 'Unable to load file (%s)' % e.strerror
-        raise
-    return d
+
+    def __init__(self, filepath: str, modname: str):
+        """Create a PEP 302 finder/loader for specific files.
+
+        Args:
+            filepath: The full path of the Python file.
+            modname: The wanted name of the module.
+        Raises:
+            ValueError: If a module of the same name or a conflicting
+                finder/loader exists.
+        """
+        if modname in sys.modules:
+            raise ValueError(f"Module {modname} exists in sys.modules.")
+
+        if any(isinstance(finder, PyFileAsModuleFinderLoader) and finder.modname == modname
+               for finder in sys.meta_path):
+            raise ValueError(
+                f"Module finder for {modname} registered in sys.meta_path already.")
+
+        self.filepath = filepath
+        self.modname = modname
+
+    @classmethod
+    def register(cls, filepath: str, modname: str) -> str:
+        """Create and register a module finder/loader for Python files.
+
+        Args:
+            filepath: The full path of the Python file.
+            modname: The wanted name of the module.
+        Returns:
+            The created finder/loader object.
+        """
+        obj = cls(filepath=filepath, modname=modname)
+        sys.meta_path.insert(0, obj)
+        return obj
+
+    def find_module(self,
+                    fullname: str,
+                    path: str = None) -> typing.Optional['PyFileAsModule']:
+        """Return self as the loader if responsible.
+
+        Args:
+            fullname: The name of the module.
+            path: The path for subpackages or submodules (optional).
+        Returns:
+            This object, if it is responsible for the name, or None.
+        """
+        if fullname == self.modname:
+            return self
+
+    def load_module(self, fullname: str) -> types.ModuleType:
+        """Return a module from a registered file.
+
+        Args:
+            fullname: The name of the module.
+        Returns:
+            The loaded module.
+        Raises:
+            ImportError: If the module can't be loaded.
+        """
+        if fullname in sys.modules:
+            return sys.modules[fullname]
+
+        try:
+            m = types.ModuleType(fullname)
+            m.__file__ = self.filepath
+            m.__loader__ = self
+            sys.modules[fullname] = m
+
+            try:
+                f = open(self.filepath, 'r')
+            except FileNotFoundError as e:
+                raise ImportError(str(e)) from e
+
+            with f:
+                exec(f.read(), sys.modules[fullname].__dict__)
+
+            return m
+        except Exception:
+            if fullname in sys.modules:
+                del sys.modules[fullname]
+            raise

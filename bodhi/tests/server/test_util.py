@@ -17,10 +17,12 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 from xml.etree import ElementTree
 from unittest import mock
+import copy
 import gzip
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -1555,35 +1557,132 @@ class TestTransactionalSessionMaker(base.BaseTestCase):
         Session.remove.assert_called_once_with()
 
 
-class TestPyfileToModule(unittest.TestCase):
-    """Test the pyfile_to_module() function."""
+class TestPyFileAsModuleFinderLoader:
+    """Test the PyFileAsModuleFinderLoader module finder/loader class."""
 
-    def setUp(self):
-        self.tempdir = tempfile.mkdtemp('bodhi')
-
-    def tearDown(self):
-        shutil.rmtree(self.tempdir)
-
-    def test_basic_call(self):
-        filepath = os.path.join(self.tempdir, "testfile.py")
-        with open(filepath, "w") as fh:
+    @classmethod
+    def setup_class(cls):
+        cls.tempdir = tempfile.mkdtemp('bodhi')
+        cls.module_filepath = os.path.join(cls.tempdir, "testfile.py")
+        with open(cls.module_filepath, "w") as fh:
             fh.write("FOO = 'bar'\n")
-        result = util.pyfile_to_module(filepath, "testfile")
-        self.assertEqual(getattr(result, "FOO"), "bar")
-        self.assertEqual(result.__file__, filepath)
-        self.assertEqual(result.__name__, "testfile")
 
-    def test_invalid_path(self):
-        filepath = os.path.join(self.tempdir, "does-not-exist.py")
-        with self.assertRaises(IOError) as cm:
-            util.pyfile_to_module(filepath, "testfile")
-        self.assertEqual(
-            cm.exception.strerror, 'Unable to load file (No such file or directory)')
+    @classmethod
+    def teardown_class(cls):
+        shutil.rmtree(cls.tempdir)
 
-    def test_invalid_path_silent(self):
-        filepath = os.path.join(self.tempdir, "does-not-exist.py")
-        try:
-            result = util.pyfile_to_module(filepath, "testfile", silent=True)
-        except IOError as e:
-            self.fail("pyfile_to_module raised an exception in silent mode: {}".format(e))
-        self.assertFalse(result)
+    def setup_method(self, method):
+        self.sys_mod_mm_backup = {
+            'sys.modules': copy.copy(sys.modules),
+            'sys.meta_path': copy.copy(sys.meta_path),
+        }
+
+    def teardown_method(self, method):
+        sys.modules = self.sys_mod_mm_backup['sys.modules']
+        sys.meta_path = self.sys_mod_mm_backup['sys.meta_path']
+
+    def test_registration(self):
+        """Test that the module finder/loader is registered properly."""
+        finder_loader = util.PyFileAsModuleFinderLoader.register(self.module_filepath,
+                                                                 'test_module')
+
+        assert finder_loader.modname == 'test_module'
+        assert len([finder
+                    for finder in sys.meta_path
+                    if isinstance(finder, util.PyFileAsModuleFinderLoader)
+                    and finder.filepath == self.module_filepath
+                    and finder.modname == 'test_module']) == 1
+
+    def test_registration_for_existing_module_fails(self):
+        """Test that registration for an existing module name fails."""
+        with pytest.raises(ValueError) as excinfo:
+            util.PyFileAsModuleFinderLoader.register(self.module_filepath, 'pytest')
+
+        assert str(excinfo.value) == "Module pytest exists in sys.modules."
+
+    def test_duplicate_registration__fails(self):
+        """Test that registering twice for the same module name fails."""
+        util.PyFileAsModuleFinderLoader.register(self.module_filepath, 'test_module')
+        with pytest.raises(ValueError) as excinfo:
+            util.PyFileAsModuleFinderLoader.register(self.module_filepath, 'test_module')
+
+        assert str(excinfo.value) == ("Module finder for test_module registered in sys.meta_path "
+                                      "already.")
+
+    @pytest.mark.parametrize('override', (False, True))
+    @mock.patch('bodhi.server.util.open', wraps=open)
+    def test_import(self, patched_open, override):
+        """Test that importing a registered module works."""
+        finder_loader = util.PyFileAsModuleFinderLoader.register(self.module_filepath,
+                                                                 'test_module')
+
+        if override:
+            # Ensure a module of the same name is in sys.path.
+            sys_path_saved = copy.copy(sys.path)
+            canary_module_filepath = os.path.join(self.tempdir, "test_module.py")
+            with open(canary_module_filepath, "w") as fh:
+                fh.write("FOO = 'gna'\n")
+            sys.path.insert(0, self.tempdir)
+
+        with mock.patch.object(
+            finder_loader, 'load_module', wraps=finder_loader.load_module
+        ) as load_module:
+            import test_module
+
+        if override:
+            sys.path = sys_path_saved
+            os.remove(canary_module_filepath)
+
+        load_module.assert_called_once_with('test_module')
+        patched_open.assert_called_once_with(self.module_filepath, 'r')
+
+        assert 'test_module' in sys.modules
+        assert test_module.FOO == 'bar'
+        assert test_module.__file__ == self.module_filepath
+        assert test_module.__name__ == 'test_module'
+
+    @mock.patch('bodhi.server.util.open', wraps=open)
+    def test_import_existing(self, open):
+        """Test that importing an existing module doesn't load it twice."""
+        util.PyFileAsModuleFinderLoader.register(self.module_filepath, 'test_module')
+
+        import test_module
+
+        # This should just return the same object from sys.modules and not
+        # attempt to load it again.
+        import test_module as same_test_module
+
+        open.assert_called_once_with(self.module_filepath, 'r')
+        assert same_test_module is test_module
+
+    def test_non_existing_module_file(self):
+        """This tests the behavior if the registered file is missing."""
+        fpath = os.path.join(self.tempdir, 'does-not-exist.py')
+
+        util.PyFileAsModuleFinderLoader.register(fpath, 'test_module')
+
+        with pytest.raises(ImportError) as excinfo:
+            import test_module
+            assert test_module is not test_module  # this shouldn't be reached
+
+        assert str(excinfo.value).endswith(f"No such file or directory: {fpath!r}")
+
+    @mock.patch('bodhi.server.util.open', wraps=open)
+    def test_load_module_already_loaded(self, open):
+        """Test that load_module() returns modules present in sys.modules."""
+        loader = util.PyFileAsModuleFinderLoader.register(self.module_filepath, 'test_module')
+
+        same_pytest = loader.load_module('pytest')
+
+        open.assert_not_called()
+        assert pytest == same_pytest
+
+    @mock.patch('bodhi.server.util.types.ModuleType')
+    def test_load_module_failing(self, ModuleType):
+        """Test generic errors in load_module()."""
+        loader = util.PyFileAsModuleFinderLoader.register(self.module_filepath, 'test_module')
+
+        ModuleType.side_effect = RuntimeError()
+
+        with pytest.raises(RuntimeError):
+            loader.load_module('test_module')

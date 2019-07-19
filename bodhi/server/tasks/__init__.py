@@ -24,7 +24,7 @@ import celery
 
 from bodhi.server import bugs, buildsys, initialize_db
 from bodhi.server.config import config
-from bodhi.server.util import pyfile_to_module
+from bodhi.server.util import PyFileAsModuleFinderLoader
 
 
 # Workaround https://github.com/celery/celery/issues/5416
@@ -35,9 +35,12 @@ if celery.version_info < (4, 3) and sys.version_info >= (3, 7):  # pragma: no co
 
 log = logging.getLogger('bodhi')
 
+# Register the Celery configuration file as a module
+PyFileAsModuleFinderLoader.register(config["celery_config"], 'bodhi_celery_config')
+
 # The Celery app object.
 app = celery.Celery()
-app.config_from_object(pyfile_to_module(config["celery_config"], "celeryconfig"))
+app.config_from_object('bodhi_celery_config')
 
 
 def _do_init():

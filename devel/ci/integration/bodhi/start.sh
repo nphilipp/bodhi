@@ -6,9 +6,7 @@ fedora-messaging consume &
 
 # Celery
 echo "Starting Celery"
-pushd /  # Otherwise celeryconfig will be picked up from CWD (/bodhi)
 PYTHONPATH=/etc/bodhi celery-3 worker -A bodhi.server.tasks.app -Q celery,has_koji_mount -l debug &
-popd
 
 echo "Starting Bodhi"
 # Bodhi webserver
